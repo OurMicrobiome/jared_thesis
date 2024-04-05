@@ -1,0 +1,10 @@
+---
+title: "thesis_repo"
+author: "Jared Gracia-David"
+date: "2024-04-05"
+output: html_document
+---
+
+```{r}
+"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"
+```
