@@ -1,0 +1,336 @@
+---
+title: "Read_mapping_coassembly"
+author: "Jared Gracia-David"
+date: "2023-11-28"
+output: html_document
+---
+
+```{r, setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/project/pi_jlb_umass_edu/JGI_assembly_of__Metagenome_Combined_Assembly_-_Co-assembly_of_Harvard_Forest/")
+library(tidyverse)
+library(stringi)
+library(tidyr)
+library(dplyr)
+library("data.table")
+```
+
+
+#Reading and merging files
+```{r}
+coverage_files <- list.files(pattern="*bam.coverage.txt")
+headers <- gsub(".................filter-METAGENOME.sorted.bam.coverage.txt", "", coverage_files)
+headers <- as.vector(c("rname", headers))
+headers1 <- headers[1:14]
+headers2 <- headers[15:28]
+coverage_files1 <- coverage_files[1:14]
+coverage_files2 <- coverage_files[15:28]
+head(headers)
+```
+
+```{r}
+#import and merge coverage files
+coverage1 <- lapply(coverage_files, function(file) {
+  df <- fread(file, select = c("#rname", "meandepth"))
+  setnames(df, "meandepth", paste0("meandepth", "_", file))
+  return(df)
+})
+
+coverage <- Reduce(function(x, y) merge(x, y, by = "#rname", all.x=TRUE), coverage1)
+rm(coverage1)
+gc()
+
+setwd("/work/pi_jlb_umass_edu/blanchardlab/Jared/Coverage")
+saveRDS(coverage, file = "coverage.rds")
+```
+
+#Working with coverage data
+```{r}
+coverage <- readRDS(file = "/work/pi_jlb_umass_edu/blanchardlab/Jared/Coverage/coverage.rds")
+
+#rname / scaffold ID mapping
+# setwd("/work/pi_jlb_umass_edu/blanchardlab/BW_Toggle/BW_Toggle_MetaG_coassembly/")
+# mapping <- fread("Contig_names_mapping.tsv", header=FALSE, col.names=c("rname", "Scaffold_oid"))
+
+#Sample name mapping
+sample_mapping <- read_csv("/work/pi_jlb_umass_edu/blanchardlab/BW_Toggle/BW_Toggle_MetaG_coassembly/Sample_mapping.csv")
+# sample_headers <- c("rname", "vOTU", sample_mapping$Sample)
+sample_headers <- c("rname", sample_mapping$Sample)
+colnames(coverage) <- sample_headers
+```
+
+```{r}
+cov1000 <- coverage[1:1000,]
+#cov1000 <- merge(cov1000, mapping, by = "rname", all.x=TRUE, all.y=FALSE)
+#cov1000 <- cov1000[,c(1,30,2:29)]
+# cov1000 <- cov1000 %>%
+#   select(sort(names(.)))
+colnames(cov1000) <- sample_headers
+cov1000 <- cov1000[,3:30] %>%
+  mutate_if(is.numeric, ~round(., 0))
+head(cov1000)
+```
+```{r}
+# coverage <- merge(coverage, co_votu, by = "rname", all=TRUE)
+# coverage <- coverage[,c(1,30,2:29)]
+# coverage <- coverage[order(vOTU, decreasing=FALSE,na.last=TRUE),]
+# coverage <- coverage %>%
+#   mutate_at("rname", str_replace, "scaffold_", "") %>%
+#   mutate_at("rname", str_replace, "_c1", "") %>%
+#   mutate_at("vOTU", str_replace, "vOTU_", "")
+```
+
+#Filter by CheckV results
+```{r}
+#Reducing scaffold list to HQ phage genomes
+checkv_res <- read_tsv("/work/pi_jlb_umass_edu/blanchardlab/Jared/checkv/virsorted.05/quality_summary.tsv") %>%
+  filter(checkv_quality == "High-quality" | checkv_quality == "Complete") %>%
+  mutate_at("contig_id", ~str_replace(., "\\|\\|full", ""))
+phages <- coverage %>%
+  filter(rname %in% checkv_res$contig_id)
+phages_rounded <- phages %>%
+  mutate_if(is.numeric, ~round(., 0))
+
+# write_tsv(checkv_res[,1], "/work/pi_jlb_umass_edu/blanchardlab/Jared/checkv/virsorted.05/phagelist.txt", col_names=FALSE)
+
+# summary(checkv_res$contig_length)
+# checkv_res %>%
+#   ggplot(aes(x=contig_length))+
+#   geom_histogram(binwidth=1000)+
+#   xlim(0,150000)
+```
+
+#Normalization
+```{r}
+#Using all contig counts
+sums <- colSums(coverage[,2:29], na.rm = TRUE)
+count_factor <- mean(sums)/sums
+coverage_norm <- coverage
+sums
+```
+
+```{r}
+#compare phagesums to sums (above)
+phagesums <- colSums(phages[,2:29], na.rm = TRUE)
+phagesums
+```
+
+```{r}
+for (col in names(count_factor)) {
+  coverage_norm[[col]] <- coverage_norm[[col]] * count_factor[col]
+}
+
+saveRDS(coverage_norm, file = "/work/pi_jlb_umass_edu/blanchardlab/Jared/Coverage/coverage_normalized.rds")
+
+head(coverage_norm)
+```
+
+```{r}
+#Only phage contig counts
+phages <- readRDS("/work/pi_jlb_umass_edu/blanchardlab/Jared/Coverage/phages.rds")
+colnames(phages) <- sample_headers
+phages_norm <- readRDS("/work/pi_jlb_umass_edu/blanchardlab/Jared/Coverage/phages_norm.rds")
+
+
+#phage_factor <- mean(colSums(phages[,2:29], na.rm = TRUE))/(colSums(phages[,2:29], na.rm = TRUE))
+phages_renorm <- phages
+
+for (col in names(count_factor)) {
+  phages_renorm[[col]] <- phages_renorm[[col]] * count_factor[col]
+}
+
+saveRDS(phages_renorm, file = "/work/pi_jlb_umass_edu/blanchardlab/Jared/Coverage/phages_renorm.rds")
+```
+
+#looking at coassembly summary info
+```{r}
+co_mapped <- read_tsv("/work/pi_jlb_umass_edu/blanchardlab/BW_Toggle/BW_Toggle_MetaG_coassembly/coassembly_metadata.tsv")
+co_mapped_hq <- co_mapped %>%
+  filter(`MIUViG quality` == "High-quality")
+nrow(co_mapped_hq)
+
+# setwd("/work/pi_jlb_umass_edu/blanchardlab/Forest-phage-warming")
+# coassembly <- read_tsv("IMG_VR_coassembly_Summary_UViGs_3300050821.tsv")
+# coassembly <- merge(coassembly, mapping, by = "Scaffold_oid", all.x=TRUE, all.y=FALSE)
+# coassembly <- coassembly[,c(1,20,2:19)]
+# co_votu <- coassembly %>%
+#   select("rname", "vOTU")
+# head(coassembly)
+
+#Get rnames of genomes found thru Fisher's test on subplot presence 
+co_mapped %>%
+  filter(vOTU %in% c("vOTU_03821387", "vOTU_03821187", "vOTU_00482583", "vOTU_03821447", "vOTU_03821890", "vOTU_03822410", "vOTU_03926010", "vOTU_00547804", "vOTU_03822187", "vOTU_03822542", "vOTU_03822793", "vOTU_03822988", "vOTU_03823053")) %>%
+  select(rname, vOTU, Confidence)
+```
+
+```{r}
+#vOTUs in DESeq output?
+res1 <- write.table(res[,1], "diff_ID.txt", quote = FALSE, row.names = FALSE, col.names = FALSE)
+diff <- setdiff(res$row, co_mapped$rname)
+head(res$row)
+shared <- Reduce(intersect, highcount$rname, co_mapped$rname)
+head(shared)
+```
+
+
+#Metatranscriptomes
+```{r}
+# library(seqinr)
+# library(ShortRead)
+setwd("/work/pi_jlb_umass_edu/blanchardlab/BW_Toggle/BW_Toggle_MetaT_JGI_reads")
+transcr1 <- gzfile("NatBWH4O_metat.trim.fastq.gz", "r")
+transcr1 <- readFastq(transcr1)
+```
+
+```{r}
+# Load required library
+library(R.utils)
+
+# Decompress the file to a temporary directory
+decompressed_file <- tempfile()
+
+# Open the gzipped file for reading
+gz <- gzfile("/work/pi_jlb_umass_edu/blanchardlab/BW_Toggle/BW_Toggle_MetaT_JGI_reads/NatBWH4O_metat.trim.fastq.gz", "r")
+
+# Write the decompressed content to a temporary file
+writeLines(readLines(gz), decompressed_file)
+
+# Close the gzipped file
+close(gz)
+
+# Read the decompressed FASTQ file
+fastq_data <- readFastq(decompressed_file)
+
+# Now you can work with the 'fastq_data' object, which contains the contents of the FASTQ file
+# For example, you can access individual reads using fastq_data$reads
+# Or perform further processing or analysis on the data
+
+# Don't forget to clean up the temporary file
+unlink(decompressed_file)
+```
+
+#Host genomes / taxonomies
+```{r}
+#Create a list containing bin IDs and the scaffold IDs of the host genomes contained in each
+
+library(rtracklayer)
+setwd("/work/pi_jlb_umass_edu/blanchardlab/BW_Toggle/BW_Toggle_MetaG_coassembly/Binning_Data")
+tar_files <- list.files("/work/pi_jlb_umass_edu/blanchardlab/BW_Toggle/BW_Toggle_MetaG_coassembly/Binning_Data/")
+level_list <- list()
+
+for (file in tar_files) {
+  untar(file, exdir = "/work/pi_jlb_umass_edu/blanchardlab/BW_Toggle/BW_Toggle_MetaG_coassembly/extract2/")
+  file_name <- gsub("\\.tar\\.gz$", "", basename(file))
+  gff_file <- file.path("/work/pi_jlb_umass_edu/blanchardlab/BW_Toggle/BW_Toggle_MetaG_coassembly/extract2/", paste0(file_name, ".gff"))
+  gff_file <- gsub("//", "/", gff_file)
+  gff_data <- import(gff_file)
+  seqnames_levels <- levels(gff_data@seqnames)
+  level_list[[file_name]] <- seqnames_levels
+}
+#saveRDS(level_list, file = "/work/pi_jlb_umass_edu/blanchardlab/BW_Toggle/BW_Toggle_MetaG_coassembly/level_list.rds")
+```
+
+```{r}
+level_list <- readRDS("/work/pi_jlb_umass_edu/blanchardlab/BW_Toggle/BW_Toggle_MetaG_coassembly/level_list.rds")
+#collapse coverage dataframe into bins as rows
+
+# Collapse the dataframe based on level_list output
+collapse <- coverage %>%
+  rowwise() %>%
+  mutate(rname_sum = sum(c_across(one_of(unlist(level_list)))), .keep="unused") %>%
+  ungroup()
+
+# Set new row names as elements of level_list
+rownames(collapse) <- names(level_list)
+
+# Print the collapsed dataframe
+saveRDS(collapse, file = "collapsed_counts.rds")
+```
+
+```{r}
+#collapsing counts by host bin
+host_bins <- read.table("/work/pi_jlb_umass_edu/blanchardlab/BW_Toggle/BW_Toggle_MetaG_coassembly/bin_contig_length.tsv", header=TRUE)
+
+#merge with id conversion table
+mapping <- fread("/work/pi_jlb_umass_edu/blanchardlab/BW_Toggle/BW_Toggle_MetaG_coassembly/Contig_names_mapping.tsv", header=FALSE, col.names=c("rname", "Scaffold_oid"))
+host_bins_id <- merge(host_bins, mapping, by.x = "contig", by.y = "Scaffold_oid", all.x = TRUE, all.y = FALSE)
+
+#merge with counts table
+coverage <- readRDS(file = "/work/pi_jlb_umass_edu/blanchardlab/Jared/Coverage/coverage.rds")
+sample_mapping <- read_csv("/work/pi_jlb_umass_edu/blanchardlab/BW_Toggle/BW_Toggle_MetaG_coassembly/Sample_mapping.csv")
+sample_headers <- c("rname", sample_mapping$Sample)
+colnames(coverage) <- sample_headers
+host_counts <- merge(host_bins_id, coverage, by = "rname", all.x = TRUE, all.y = FALSE)
+
+#multiply counts by length
+host_counts[,5:32] <- host_counts[,5:32]*host_counts$length
+
+#remove scaffold id and contig id
+host_counts <- host_counts[,3:32]
+
+#group by bin, summing length and counts
+host_counts <- host_counts %>%
+  group_by(bin) %>%
+  summarize(across(where(is.numeric), sum))
+
+#divide summed counts by summed length
+host_counts[,2:30] <- host_counts[,2:30]/host_counts$length
+
+# select bin id and 28 counts columns
+host_counts <- host_counts[,-2]
+host_counts$bin <- as.factor(host_counts$bin)
+
+#merge taxonomy with counts
+#host_taxa <- read_tsv("/work/pi_jlb_umass_edu/blanchardlab/Jared/Hosts/metaG_coassembly_all_metabat.tsv")
+
+saveRDS(host_counts, file = "/work/pi_jlb_umass_edu/blanchardlab/Jared/Coverage/bin_counts.rds")
+
+head(host_counts)
+```
+
+
+###extras
+```{r}
+n222578 <- fread("11839.4.222578.GAGCTCA-TTGAGCT.filter-METAGENOME.sorted.bam.coverage.txt")
+head(n222578)
+barplot(n222578$meandepth, breaks = 10, xlim = c(0, 10))
+head(coverage)
+```
+
+```{r}
+# coverage_sorted$rnumber <- coverage_sorted$rname
+# coverage_sorted <- coverage_sorted %>%
+#   mutate_at("rname", str_replace, "scaffold_", "") %>%
+#   mutate_at("rname", str_replace, "_c1", "")
+# coverage_sorted$rname <- as.numeric(coverage_sorted$rname)
+# coverage_sorted <- coverage_sorted[order(rname, decreasing=FALSE),]
+```
+
+```{r}
+coverage1 <- lapply(coverage_files1, fread(select = c("#rname", "meandepth")))
+
+for (i in 1:14){
+  coverage1[[i]] <- select(coverage1[[i]], c("#rname", "meandepth"))
+  rename(coverage1[[i]][,2], headers)
+}
+
+for (x in 1:14){
+  coverage1[[x]] <- rename(coverage1[[x]], headers1 = "i")
+}
+
+merged1 <- Reduce(function(...) merge(..., by='#rname', all.x=TRUE), coverage1)
+
+#coverage1.3 <- merge(coverage1.2, by='#rname', all.x=TRUE), coverage1)
+coverage1 <- lapply(coverage1, select(c('#rname', 'meandepth')))
+
+merged1 <- Reduce(function(...) merge(..., by='#rname', all.x=TRUE), coverage1)
+#setwd("/work/pi_jlb_umass_edu/blanchardlab/Jared/Coverage")
+#saveRDS(coverage1, file = "coverage1.rds")
+coverage1[[2]] <- rename(coverage1[[2]], p = "p")
+head(coverage1[[2]])
+```
+
+```{r}
+test_coverage1 <- read.table("11839.4.222578.GAGCTCA-TTGAGCT.filter-METAGENOME.sorted.bam.coverage.txt",sep="\t",header=T)
+test_coverage2 <- fread("11862.7.224581.ACGGAAC-TGTTCCG.filter-METAGENOME.sorted.bam.coverage.txt")
+summary(test_coverage2)
+```

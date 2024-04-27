@@ -1,0 +1,197 @@
+---
+title: "phylogeny"
+author: "Jared Gracia-David"
+date: "2024-02-13"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+#knitr::opts_knit$set(root.dir = "/work/pi_jlb_umass_edu/blanchardlab/Jared/VIRify/results/final-viral-combined/08-final/taxonomy")
+library(tidyverse)
+library(stringi)
+library(dplyr)
+library(ggplot2)
+library(ape)
+library(ggtree)
+```
+
+```{r}
+tree <- read.tree("/work/pi_jlb_umass_edu/blanchardlab/Jared/raxml/boot.term.raxml.supportTBE")
+write.tree(tree, file = "/work/pi_jlb_umass_edu/blanchardlab/Jared/raxml/boot.term.raxml.supportTBE.nwk")
+```
+
+
+```{r}
+tree <- read.tree("/work/pi_jlb_umass_edu/blanchardlab/Jared/raxml/boot.term.raxml.supportTBE")
+write.tree(tree, file = "/work/pi_jlb_umass_edu/blanchardlab/Jared/raxml/helicase_raxml_renamed.nwk")
+
+tree_labels <- as.vector(tree$tip.label)
+terminase_tree_labels <- gsub(".*scaffold_(\\d+_c1).*", "scaffold_\\1", tree_labels)
+
+
+intersect <- as.vector(intersect(dramv_anno$scaffold, amg_counts$scaffold))
+
+dramv_anno %>%
+  filter(scaffold %in% intersect)
+
+tree$tip.label <- tree_labels
+intersect
+```
+
+```{r}
+#comparing terminase and helicase trees
+tree_t <- read.tree("/work/pi_jlb_umass_edu/blanchardlab/Jared/temporary/terminase_lgsub1_full.nwk")
+tree_h <- read.tree("/work/pi_jlb_umass_edu/blanchardlab/Jared/raxml/boot.heli.raxml.supportTBE")
+
+tree_h_labels <- as.vector(tree_h$tip.label)
+tree_h_labels <- gsub(".*scaffold_(\\d+_c1).*", "scaffold_\\1", tree_h_labels)
+tree_h$tip.label <- tree_h_labels
+
+tree_t_labels <- as.vector(tree_t$tip.label)
+tree_t_labels <- gsub(".*scaffold_(\\d+_c1).*", "scaffold_\\1", tree_t_labels)
+tree_t$tip.label <- tree_t_labels
+
+label_intersect <- intersect(tree_h_labels, tree_t_labels)
+
+#trim each tree to only contain shared nodes
+trimmed_tree_h <- keep.tip(tree_h, label_intersect)
+trimmed_tree_t <- keep.tip(tree_t, label_intersect)
+
+write.tree(tree_t, file = "/work/pi_jlb_umass_edu/blanchardlab/Jared/temporary/terminase_lgsub1_full_renamed.nwk")
+write.tree(trimmed_tree_h, file = "/work/pi_jlb_umass_edu/blanchardlab/Jared/raxml/tree_h_tbe_intersect.nwk")
+```
+
+```{r}
+#Getting counts matrix for species in trees
+
+tree_phages <- phages_rounded %>%
+  filter(rname %in% label_intersect)
+tree_phages
+
+amg_counts %>% filter(scaffold %in% intersect(tree_phages$rname, amg_counts$scaffold))
+```
+
+```{r}
+#Looking at DRAMv genome annotation
+dramv_anno <- read_tsv("/work/pi_jlb_umass_edu/blanchardlab/Jared/DRAM/DRAMv_Kbase/dramv_annotation.tsv") %>%
+  select(scaffold, gene_position, kegg_hit) %>%
+  filter(!is.na(kegg_hit)) %>%
+  mutate_at("scaffold", str_replace, "\\|\\|full", "")
+
+dramv_anno %>%
+  arrange(kegg_hit)
+
+anno_count <- dramv_anno %>%
+  count(kegg_hit) %>%
+  filter(n>10)
+
+anno_count
+
+ptls_scaffolds <- dramv_anno %>%
+  filter(kegg_hit == "phage terminase large subunit")
+
+lyso_scaffolds <- dramv_anno %>%
+  filter(kegg_hit == "lysozyme [EC:3.2.1.17]")
+
+intersect(ptls_scaffolds$scaffold, lyso_scaffolds$scaffold)
+```
+
+
+#Protein Clustering
+```{r}
+blastp_results <- read.table("/work/pi_jlb_umass_edu/blanchardlab/Jared/BLAST/05.checkv_phages/phage_prot.txt", header = FALSE)
+colnames(blastp_results) <- c("qseqid", "sseqid", "pident", "length", "mismatch", "gapopen", "qstart", "qend", "sstart", "send", "evalue", "bitscore")
+blastp_results <- blastp_results %>%
+  filter(evalue <= 0.0001 & bitscore >= 50 & pident >= 60 & pident < 100)
+
+# Construct a matrix based on the similarities
+genomes <- unique(c(blastp_results$qseqid, blastp_results$sseqid))
+num_genomes <- length(genomes)
+similarity_matrix <- matrix(0, nrow = num_genomes, ncol = num_genomes, dimnames = list(genomes, genomes))
+
+ident_matrix <- blastp_results[,1:3] %>%
+  pivot_wider(names_from = sseqid, values_from = pident)
+
+blastp_results %>% filter(qseqid == "scaffold_25_c1_44")
+```
+
+```{r}
+# library(mclust)
+Mclust(blastp_results)
+```
+
+
+```{r}
+#Calculate similarity scores using the hypergeometric formula
+for (i in 1:nrow(similarity_matrix)) {
+  for (j in 1:ncol(similarity_matrix)) {
+    if (i != j) {
+      # Calculate the number of shared PCs between genomes i and j
+      shared_pcs <- sum(blastp_results$Query_ID %in% rownames(similarity_matrix)[i] & 
+                        blastp_results$Subject_ID %in% rownames(similarity_matrix)[j])
+      # Calculate hypergeometric P value
+      p_value <- phyper(shared_pcs - 1, length(blastp_results$Query_ID), length(blastp_results$Subject_ID), 
+                        sum(similarity_matrix > 0))
+      # Calculate similarity score
+      similarity_score <- -log10(p_value) * length(blastp_results$Query_ID)
+      # Assign the similarity score to the matrix
+      similarity_matrix[i, j] <- similarity_score
+    }
+  }
+}
+
+write.table(similarity_matrix, "similarity_matrix.txt", sep = "\t", quote = FALSE)
+```
+
+#Taxonomy
+```{r}
+#PhaGCN taxonomy
+phagcn <- read_csv("/work/pi_jlb_umass_edu/blanchardlab/Jared/taxonomy/results/phagcn_prediction.csv") %>%
+  mutate_at("Accession", ~str_replace(., "\\|\\|full", "")) %>%
+  dplyr::rename("contig_ID" = "Accession")
+
+phagcn %>%
+  filter(Pred != "unknown") %>%
+  ggplot(aes(x=Pred))+
+  geom_bar() +
+  coord_flip()
+
+#Virify taxonomy
+hc <- read_tsv("/work/pi_jlb_umass_edu/blanchardlab/Jared/VIRify/results/05/08-final/taxonomy/high_confidence_viral_contigs_prodigal_annotation_taxonomy.tsv")
+lc <- read_tsv("/work/pi_jlb_umass_edu/blanchardlab/Jared/VIRify/results/05/08-final/taxonomy/low_confidence_viral_contigs_prodigal_annotation_taxonomy.tsv")
+pp <- read_tsv("/work/pi_jlb_umass_edu/blanchardlab/Jared/VIRify/results/05/08-final/taxonomy/prophages_prodigal_annotation_taxonomy.tsv")
+virify <- rbind(hc, lc, pp) %>%
+  mutate_at("contig_ID", ~str_replace(., "\\|.*", ""))
+
+taxon_merge <- merge(virify, phagcn, by = "contig_ID", all = TRUE) %>%
+  distinct(contig_ID, .keep_all = TRUE)
+
+#count family taxon matches between virify and phabox
+m <- taxon_merge
+nrow(m)
+
+m %>%
+  group_by(family) %>%
+  summarize(n = n())
+
+m <- m %>%
+  rowwise() %>%
+  mutate(match = ifelse(family == Pred, "match", "no_match")) %>%
+  filter(match == "no_match")
+
+write.csv(m, "/work/pi_jlb_umass_edu/blanchardlab/Jared/VIRify/results/05/08-final/taxonomy/nomatch.csv")
+
+taxon_merge %>%
+  filter(class == "Caudoviricetes" | class == "Megaviricetes" )
+```
+
+```{r}
+#assign taxonomy to different genomes
+de_taxo <- taxon_merge %>%
+  select(Pred, contig_ID) %>%
+  merge(res_bind, by.x = "contig_ID", by.y = "row", all.x = FALSE, all.y = TRUE)
+
+write.csv(de_taxo, "/work/pi_jlb_umass_edu/blanchardlab/Jared/DESeq_results/res_plus_taxo.csv")
+```

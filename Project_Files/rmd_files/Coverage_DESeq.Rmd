@@ -1,0 +1,443 @@
+---
+title: "Coverage_DESeq"
+author: "Jared Gracia-David"
+date: "2024-01-11"
+output: html_document
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/work/pi_jlb_umass_edu/blanchardlab/BW_Toggle/BW_Toggle_MetaG_coassembly/")
+library(tidyverse)
+library(stringi)
+library(dplyr)
+library(DESeq2)
+library(ggplot2)
+library("data.table")
+library("viridis")
+```
+
+#sample ID mapping
+```{r}
+sample_mapping <- read_csv("/work/pi_jlb_umass_edu/blanchardlab/BW_Toggle/BW_Toggle_MetaG_coassembly/Sample_mapping.csv")
+
+sample_mapping_o <- sample_mapping %>%
+  filter(Layer == "Organic")
+sample_mapping_m <- sample_mapping %>%
+  filter(Layer == "Mineral")
+sample_mapping_c <- sample_mapping %>%
+  filter(Treatment == "Control")
+sample_mapping_h <- sample_mapping %>%
+  filter(Treatment == "Heated")
+
+sample_headers <- c("rname", sample_mapping$Sample)
+sample_headers_o <- c("rname", sample_mapping_o$Sample)
+sample_headers_m <- c("rname", sample_mapping_m$Sample)
+sample_headers_c <- c("rname", sample_mapping_c$Sample)
+sample_headers_h <- c("rname", sample_mapping_h$Sample)
+```
+
+#Counts
+```{r}
+###Virsorter.05/CheckV results
+phages <- readRDS("/work/pi_jlb_umass_edu/blanchardlab/Jared/Coverage/phages.rds")
+
+colnames(phages) <- sample_headers
+p <- as.matrix(phages[,-1])
+row.names(p) <- phages$rname
+
+#By layer
+phages_temp_m <- phages %>%
+  select(sample_headers_m) %>%
+  mutate_if(is.numeric, ~round(., 0))
+phages_m <- as.matrix(phages_temp_m[,-1])
+row.names(phages_m) <- phages_temp_m$rname
+
+phages_temp_o <- phages %>%
+  select(sample_headers_o) %>%
+  mutate_if(is.numeric, ~round(., 0))
+phages_o <- as.matrix(phages_temp_o[,-1])
+row.names(phages_o) <- phages_temp_o$rname
+
+#Adding pseudocounts for DESeq
+# ones <- c(1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1)
+# ones <- c(1,1,1,1,1,1,1,1,1,1,1,1,1,1)
+# phages <- rbind(phages, ones)
+phages_o <- phages_o[1:679,] + 1
+phages_m <- phages_m[1:679,] + 1
+
+tail(phages_m)
+```
+
+```{r}
+phagesums <- phages
+
+#Which plot was each genome more abundant in?
+control_cols <- grep("C", names(phages))
+#control_cols <- paste("c(", paste(control_cols, collapse = ", "), ")", sep = "")
+
+heated_cols <- grep("H", names(phages))
+#h_cols <- paste("c(", paste(heated_cols, collapse = ", "), ")", sep = "")
+
+phagesums$Control_Sum <- rowSums(phagesums[,..control_cols])
+phagesums$Heated_Sum <- rowSums(phagesums[,..heated_cols])
+
+#Which layer was each genome more abundant in?
+mineral_cols <- grep("M", names(phages))
+#mineral_cols <- paste("c(", paste(mineral_cols, collapse = ", "), ")", sep = "")
+
+organic_cols <- grep("O", names(phages))
+#organic_cols <- paste("c(", paste(organic_cols, collapse = ", "), ")", sep = "")
+
+phagesums$Mineral_Sum <- rowSums(phagesums[,..mineral_cols])
+phagesums$Organic_Sum <- rowSums(phagesums[,..organic_cols])
+
+#Make new columns for each summation
+phagesums$treatment_diff <- (phagesums$Heated_Sum - phagesums$Control_Sum)
+phagesums$layer_diff <- (phagesums$Mineral_Sum - phagesums$Organic_Sum)
+
+
+#Filter for most extreme abundance differences
+phagesums_extr <- phagesums %>%
+  select(rname, treatment_diff) %>%
+  filter(treatment_diff > 20 | treatment_diff < -20)
+
+#Plot histogram of differential abundance by plot type
+phagesums %>%
+  ggplot(aes(x=treatment_diff)) +
+  geom_histogram(binwidth=1) +
+  xlim(-50,50) +
+  xlab("Abundance difference by plot type (Heated - Control)") +
+  ylab("Number of contigs")
+```
+```{r}
+###Genomad results
+co_mapped <- read_tsv("/work/pi_jlb_umass_edu/blanchardlab/BW_Toggle/BW_Toggle_MetaG_coassembly/coassembly_metadata.tsv")
+
+#High quality only
+co_mapped_hq <- co_mapped %>%
+  filter(`MIUViG quality` == "High-quality")
+coconuts <- coverage %>% filter(rname %in% co_mapped_hq$rname)
+colnames(coconuts) <- sample_headers
+coconuts <- coconuts %>%
+#  select(sample_headers_o) %>%
+  mutate_if(is.numeric, ~round(., 0))
+co_counts <- as.matrix(coconuts[,-1])
+row.names(co_counts) <- coconuts$rname
+
+#All phage genomes
+coconuts_all <- coverage %>% filter(rname %in% co_mapped$rname)
+colnames(coconuts_all) <- sample_headers
+coconuts_all <- coconuts_all %>%
+#  select(all_of(sample_headers_h)) %>%
+  mutate_if(is.numeric, ~round(., 0))
+co_all <- as.matrix(coconuts_all[,-1])
+row.names(co_all) <- coconuts_all$rname
+
+nrow(coconuts)
+```
+```{r}
+#Comparing output from Genomad and Virsorter/CheckV
+nrow(phages)
+nrow(co_counts)
+nrow(co_all)
+
+# coconuts %>% filter(rname %in% res$row)
+# checkv_genomad_notshared <- setdiff(checkv_res$contig_id, co_mapped_hq$rname)
+# length(checkv_genomad_shared)
+# length(checkv_genomad_notshared)
+# length(co_mapped_hq$rname)
+# write_tsv(co_mapped_hq[,2], "/work/pi_jlb_umass_edu/blanchardlab/Jared/checkv/virsorted.05/genomad_phagelist.txt", col_names=FALSE)
+```
+```{r}
+#Counting/detecting duplicates
+covcount <- coverage %>% dplyr::count(rname)
+covcount %>% dplyr::count(n)
+head(phages_org)
+```
+
+#Coldata
+```{r}
+sample_mapping <- read_csv("/work/pi_jlb_umass_edu/blanchardlab/BW_Toggle/BW_Toggle_MetaG_coassembly/Sample_mapping.csv")
+sample_mapping$Treatment <- as.factor(sample_mapping$Treatment)
+sample_mapping$Layer <- as.factor(sample_mapping$Layer)
+
+#Treatment: heated vs control - plus separate analysis by layer
+coldata <- sample_mapping %>%
+  select("Sample", "Treatment")
+
+coldata_o <- sample_mapping %>%
+  filter(Layer == "Organic") %>%
+  select("Sample", "Treatment")
+
+coldata_m <- sample_mapping %>%
+  filter(Layer == "Mineral") %>%
+  select("Sample", "Treatment")
+
+coldata_c <- sample_mapping %>%
+  filter(Treatment == "Control") %>%
+  select("Sample", "Layer")
+
+coldata_h <- sample_mapping %>%
+  filter(Treatment == "Heated") %>%
+  select("Sample", "Layer")
+
+#Layer: organic vs mineral
+# coldata <- sample_mapping %>%
+#   select("Sample", "Layer")
+# coldata$Layer <- as.factor(coldata$Layer)
+
+getwd()
+```
+
+```{r}
+#Collapse by cluster for DESeq
+meta <- read_csv("/work/pi_jlb_umass_edu/blanchardlab/Jared/vcontact/checkv_phage_genome_overview_merged.csv") %>%
+  filter(type == "query") %>%
+  select(row, VC) %>%
+  distinct(row, .keep_all=TRUE)
+
+clustered <- merge(meta, phages, by.x="row", by.y="rname", all=TRUE) %>%
+  group_by(VC) %>%
+  summarize(across(where(is.numeric), sum)) %>%
+#  mutate_if(is.numeric, ~round(., 0)) %>%
+  dplyr::rename(rname = VC)
+
+#Separate counts by layer
+clustered_m <- clustered %>%
+  select(sample_headers_m) %>%
+  mutate_if(is.numeric, ~round(., 0))
+VC_m <- as.matrix(clustered_m[,-1])
+row.names(VC_m) <- clustered_m$rname
+
+clustered_o <- clustered %>%
+  select(sample_headers_o) %>%
+  mutate_if(is.numeric, ~round(., 0))
+VC_o <- as.matrix(clustered_o[,-1])
+row.names(VC_o) <- clustered_o$rname
+
+vc <- clustered %>%
+  mutate_if(is.numeric, ~round(., 0))
+vc <- as.matrix(vc[,-1])
+row.names(vc) <- clustered$rname
+
+#write.csv(vc, "/work/pi_jlb_umass_edu/blanchardlab/Jared/Coverage/VC_counts_norm.csv")
+```
+
+#DESeq
+```{r}
+#design = ~ Treatment / Layer / Treatment + Layer
+dds <- DESeqDataSetFromMatrix(countData = hc,
+                              colData = coldata,
+                              design = ~ Treatment)
+dds
+```
+
+```{r}
+dds$Treatment = relevel(dds$Treatment, ref="Control")
+# dds$Layer = relevel(dds$Layer, ref="Mineral")
+
+dds <- DESeq(dds)
+# res <- results(dds, alpha=0.05, tidy=TRUE)
+res <- results(dds, tidy=TRUE)
+```
+
+```{r}
+res <- res %>%
+  filter(padj<0.05)
+
+summary(res)
+# intersect(res$row, co_mapped_hq$rname)
+res_m <- res
+res
+write.csv(res, "/work/pi_jlb_umass_edu/blanchardlab/Jared/DESeq_results/res_vc_o.csv")
+
+res_bind <- rbind(res_o, res_m) %>%
+  distinct(row, .keep_all = TRUE)
+```
+
+#Analyses and plots
+```{r}
+#Put results from DESeq and AMG annotation into table to map to vContact network
+
+vcontact_table <- read_csv("/work/pi_jlb_umass_edu/blanchardlab/Jared/DRAM/DRAMv_Kbase/checkv_phage_genome_overview_merged.csv")
+phage_meta_table <- vcontact_table #For DE values for heatmap plot below
+
+de_anno <- rbind(res_o, res_m) %>%
+  mutate(DE = ifelse(log2FoldChange > 0, "up", "down")) %>%
+  select(row, DE) %>%
+  distinct()
+de_anno
+
+amgs_for_nwk <- read_tsv("/work/pi_jlb_umass_edu/blanchardlab/Jared/DRAM/DRAMv_Kbase/amg_summary.tsv") %>%
+  select(scaffold, category, header, module, gene_description) %>%
+  distinct(scaffold, gene_description, .keep_all = TRUE)
+amgs_for_nwk
+
+de_amg_anno <- merge(de_anno, amgs_for_nwk, by.x = "row", by.y = "scaffold", all = TRUE)
+de_amg_anno <- merge(de_amg_anno, vcontact_table[,-1], by.x = "row", by.y = "Genome", all = TRUE)
+
+#get phage abundance sums from earlier, transform to pos or neg, merge with de_amg_anno
+phage_change <- phagesums %>%
+  mutate(layer_chg = ifelse(layer_diff > 0, "up", "down"), trmt_chg = ifelse(treatment_diff > 0, "up", "down")) %>%
+  select(rname, layer_chg, trmt_chg)
+
+phage_change <- phagesums_extr %>% #just for extreme treatment differences
+  mutate(trmt_chg_extr = ifelse(treatment_diff > 0, "up", "down")) %>%
+  select(-treatment_diff)
+de_extr <- merge(vcontact_table, phage_change, by.x = "row", by.y = "rname", all = TRUE)
+
+de_amg_anno <- merge(de_amg_anno, phage_change, by.x = "row", by.y = "rname", all = TRUE)
+
+# write_csv(de_amg_anno, file = "/work/pi_jlb_umass_edu/blanchardlab/Jared/DRAM/DRAMv_Kbase/checkv_phage_genome_overview_merged.csv")
+
+db <- de_amg_anno %>%
+  filter(type == "db") %>%
+  group_by(VC) %>%
+  summarize(n = n())
+
+query <-de_amg_anno %>%
+  filter(type == "query") %>%
+  group_by(VC) %>%
+  summarize(n = n())
+
+intersect(query$VC, db$VC)
+query
+
+#Make new column in nwk node table for AMG type: either "carbon" or "other"
+amgs_for_nwk <- amgs_for_nwk %>%
+  mutate(amg = ifelse(category == "carbon utilization", "carbon", "other")) %>%
+  select(scaffold, amg)
+
+vcontact_table <- merge(amgs_for_nwk, vcontact_table, by.x = "scaffold", by.y = "row", all.x = FALSE, all.y = TRUE)
+vcontact_table
+
+#write_csv(vcontact_table, file = "/work/pi_jlb_umass_edu/blanchardlab/Jared/DRAM/DRAMv_Kbase/vcontact_table_amg_merged.csv")
+
+vcontact_table %>%
+  group_by(VC) %>%
+  summarize(n = n()) %>%
+  filter(n > 1)
+
+vcontact_table %>%
+  filter(type == "query") %>%
+  distinct(row, .keep_all = TRUE) %>%
+  group_by(VC) %>%
+  summarize(n = n()) %>%
+  filter(!is.na(VC)) %>%
+ggplot(aes(x=n)) +
+  geom_histogram(binwidth=1)
+
+vcontact_table %>%
+  distinct(row, .keep_all = TRUE) %>%
+  group_by(VC) %>%
+  summarize(n = n()) %>%
+  filter(!is.na(VC)) %>%
+ggplot(aes(x=n)) +
+  geom_histogram(binwidth=1)
+
+#add lifestyle
+vcontact_table_ls <- merge(vcontact_table, phatyp, by.x = "row", by.y = "Accession", all = TRUE)
+write.csv(vcontact_table_ls, "/work/pi_jlb_umass_edu/blanchardlab/Jared/BLAST/vcontact_table_ls.csv")
+```
+
+```{r}
+#Heatmap of DE phages by subplot
+phages <- readRDS("/work/pi_jlb_umass_edu/blanchardlab/Jared/Coverage/phages.rds")
+colnames(phages) <- c("rname", sample_mapping$Sample)
+phage_meta_table_DE <- phage_meta_table %>%
+  filter(!is.na(DE)) %>%
+  select(row, DE)
+
+phage_table_DE <- merge(phage_meta_table_DE, phages, by.x = "row", by.y = "rname", all.x = TRUE, all.y = FALSE) %>%
+  arrange(DE)
+phage_table_DE_names <- sort(colnames(phage_table_DE[,3:30]))
+
+phage_table_DE <- phage_table_DE %>%
+  select(c("row", phage_table_DE_names))
+
+phage_table_DE_long <- phage_table_DE %>% 
+  pivot_longer(
+    cols = phage_table_DE_names, 
+    names_to = "plot",
+    values_to = "abundance"
+) # prep table for geom_tile plot
+
+phage_table_DE_long$row <- factor(phage_table_DE_long$row,levels=phage_table_DE$row) #tell ggplot to keep rows in original order
+
+phage_table_DE_long %>%
+  ggplot(aes(x = plot, y = row, fill = abundance)) +
+  geom_tile() +
+  theme(axis.text.x=element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  scale_fill_viridis(trans = "log", option = "plasma", discrete = FALSE) +
+  scale_y_discrete(limits=rev)
+```
+
+```{r}
+#order res_bind DESeq result table by heatmap row ordering, get column of p values for poster
+heatmap_phages <- levels(phage_table_DE_long$row)
+res_bind <- res_bind[match(heatmap_phages, res_bind$row),]
+res_bind %>%
+#  mutate(p.adj = padj) %>%
+  select(log2FoldChange) %>%
+  round(., 3)
+
+VCoDE$rname
+```
+
+```{r}
+#Heatmap of DE VCs by subplot
+res_oo <- res_o %>%
+  arrange(log2FoldChange) %>%
+  select(row, log2FoldChange)
+
+VCoDE <- clustered %>%
+  filter(rname %in% res_o$row)
+
+VCoDE <- merge(VCoDE, res_oo, by.x = "rname", by.y = "row")
+VCoDE <- VCoDE %>%
+  arrange(log2FoldChange) %>%
+  select(-log2FoldChange)
+
+VCDE_long <- VCoDE %>% 
+  pivot_longer(
+    cols = 2:29, 
+    names_to = "plot",
+    values_to = "abundance"
+) # prep table for geom_tile plot
+
+VCDE_long$rname <- factor(VCDE_long$rname,levels=VCoDE$rname) #tell ggplot to keep rows in original order
+
+VCDE_long %>%
+  ggplot(aes(x = plot, y = rname, fill = abundance)) +
+  geom_tile() +
+  theme(axis.text.x=element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  scale_fill_viridis(trans = "log", option = "plasma", discrete = FALSE) +
+  scale_y_discrete(limits=rev)
+
+#order res_bind DESeq result table by heatmap row ordering, get column of p values for poster
+heatmap_phages <- levels(phage_table_DE_long$row)
+res_bind <- res_bind[match(heatmap_phages, res_bind$row),]
+res_bind %>%
+#  mutate(p.adj = padj) %>%
+  select(log2FoldChange) %>%
+  round(., 3)
+```
+
+```{r}
+#Getting other genomes in VCs with DE genomes
+meta <- read_csv("/work/pi_jlb_umass_edu/blanchardlab/Jared/vcontact/checkv_phage_genome_overview_merged.csv")
+
+DE_meta <- meta %>%
+  filter(DE != "n" & VC != "n")
+DE_VC <- DE_meta$VC %>%
+  unique()
+
+DE_adj <- meta %>%
+  filter(VC %in% DE_VC) %>%
+  select(row, layer_chg, trmt_chg, DE, VC, Size) %>%
+  arrange(VC)
+
+# write.csv(DE_adj, "/work/pi_jlb_umass_edu/blanchardlab/Jared/vcontact/DE_adj.csv")
+```

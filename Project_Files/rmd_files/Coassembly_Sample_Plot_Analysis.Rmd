@@ -1,0 +1,1075 @@
+---
+title: "Coassembly_Analyses"
+author: "Jared Gracia-David"
+date: "2024-01-28"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+#knitr::opts_knit$set(root.dir = "/work/pi_jlb_umass_edu/blanchardlab/Jared/VIRify/results/final-viral-combined/08-final/taxonomy")
+library(tidyverse)
+library(stringi)
+library(dplyr)
+library(ggplot2)
+library("data.table")
+```
+
+```{r}
+#Number of plots each genome occurs in
+phages <- readRDS("/work/pi_jlb_umass_edu/blanchardlab/Jared/Coverage/phages.rds")
+colnames(phages) <- sample_headers
+phagestats <- phages
+phagestats$n <- rowSums(phages[,2:29] >= 1)
+phagestats$rowsum <- rowSums(phages[,2:29])
+phagestats$meandepth <- phagestats$rowsum / 28
+
+phagestats %>%
+  ggplot(aes(x=n)) +
+  geom_bar() +
+  xlab("Number of metagenomes in which contig was present (MD >= 1)") +
+  ylab("Number of contigs")
+
+phagestats %>%
+  ggplot(aes(x=meandepth)) +
+  geom_histogram(binwidth=0.05) +
+  xlab("Meandepth per contig per sample") +
+  ylab("Number of contigs") +
+  xlim(0,5)
+
+phagestats %>%
+  ggplot(aes(x=meandepth)) +
+  geom_density() +
+  xlab("Meandepth per contig per sample") +
+  ylab("Number of contigs") +
+  xlim(0,5)
+
+summary(phagestats$meandepth)
+
+phagestats %>%
+  group_by(n) %>%
+  summarize(nn=n())
+```
+
+```{r}
+#Contig abundance by sample type
+phagesums <- as.data.frame(colSums(phages[,2:29], na.rm = TRUE))
+colnames (phagesums) <- c("abundance")
+phagesums <- cbind(as.data.frame(phagesums), sample_mapping)
+phagesums <- phagesums %>%
+  mutate(Type = paste(Treatment,Layer))
+
+phagesums$Type <- factor(phagesums$Type, levels = c("Control Mineral", "Control Organic", "Heated Mineral", "Heated Organic"))
+  
+phagesums %>%
+  ggplot(aes(x=Type,y=abundance)) +
+    geom_dotplot(binaxis='y', stackdir='center') +
+    theme(axis.text.x = element_text(size=10)) +
+    ylab("Total Phage Abundance") + 
+    xlab("Plot Type") +
+    stat_summary(fun.y=mean, geom="crossbar", linewidth=0.4, width=0.5, color="red") +
+    ylim(0,2000)
+    
+#Compare sample subtypes
+phagesomes <- phagesums %>%
+  filter(Type == "Control Mineral" | Type == "Control Organic")
+
+aov(abundance ~ Layer, data = phagesomes)
+summary(aov)
+
+t.test(abundance ~ Layer, data = phagesomes)
+
+phagesums %>%
+  filter(Type == "Heated Mineral") %>%
+  summary()
+```
+
+```{r}
+#Make venn diagram of number of vOTUs (meandepth >= 1) shared by sample type
+library(VennDiagram)
+
+bysample <- readRDS("/work/pi_jlb_umass_edu/blanchardlab/Jared/Coverage/phages.rds")
+colnames(bysample) <- sample_headers
+
+CO <- grep("C.*O", names(bysample))
+CM <- grep("C.*M", names(bysample))
+HO <- grep("H.*O", names(bysample))
+HM <- grep("H.*M", names(bysample))
+
+bysample$CO <- rowSums(bysample[, ..CO])
+bysample$CM <- rowSums(bysample[, ..CM])
+bysample$HO <- rowSums(bysample[, ..HO])
+bysample$HM <- rowSums(bysample[, ..HM])
+
+bysample <- bysample %>%
+  select(rname, CO, CM, HO, HM)
+bysample_names <- bysample
+bysample <- as.matrix(bysample[,-1])
+row.names(bysample) <- bysample_names$rname
+
+c <- lapply(1:ncol(bysample), function(i) {
+  rownames(bysample[bysample[, i] >= 1, ])
+})
+
+venn.diagram(
+  x = c,
+  category.names = c("Control Organic", "Control Mineral", "Heated Organic", "Heated Mineral"),
+  filename = "venn_1.png"
+)
+```
+
+
+#BCdist
+```{r, message=FALSE}
+#BC Dissimilarity
+library(ecodist)
+phage <- readRDS("/work/pi_jlb_umass_edu/blanchardlab/Jared/Coverage/phages.rds")
+colnames(phage) <- sample_headers
+phages <- as.matrix(phage[,-1])
+row.names(phages) <- phage$rname
+
+phage_t <- t(phages)
+bcdist <- bcdist(phage_t)
+bcdist_df <- as.matrix(bcdist)
+```
+
+```{r}
+#pcoa on bcdist
+library(ape)
+pcoa <- pcoa(bcdist_df)
+
+pcoa_df <- data.frame(pcoa$vectors)
+pcoa_df$Sample <- rownames(pcoa_df)
+pcoa_df$plot <- str_sub(pcoa_df$Sample, 1, 1)
+
+# Plot using ggplot2
+ggplot(pcoa_df, aes(x = Axis.1, y = Axis.2, label = Sample, color = plot)) +
+  geom_point(size=3) +
+#  geom_text(hjust = 0, vjust = -0.5, size=3) +
+  scale_color_manual(values=c("#65c8ce", "#de89b9")) +
+  labs(x = "PCoA1", y = "PCoA2") +
+  ylim(-0.45,0.35) +
+  xlim(-0.35,0.4)
+```
+
+```{r}
+#Create physical distance matrix
+plotdata <- read.csv("/work/pi_jlb_umass_edu/blanchardlab/Jared/rownames.csv")
+plot.data <- as.matrix(plotdata[,2:3])
+rownames(plot.data) <- plotdata$Plot
+distances <- dist(plot.data)
+distance_matrix <- as.matrix(distances)
+distance_matrix
+
+# Create plot type matrix with dimensions based on the length of names, fill with plot type combo
+rn <- rownames(distance_matrix)
+rtype <- substr(rn, 1, 1) #Get plot types
+type_matrix <- matrix(NA, nrow = length(rtype), ncol = length(rtype))
+for (i in 1:length(rtype)) {
+  type_matrix[, i] <- paste(rtype, rtype[i])
+} #fill with plot combo
+
+#Do the same for layer
+ltype <- str_sub(rn, -1, -1)
+ltype_matrix <- matrix(NA, nrow = length(ltype), ncol = length(ltype))
+for (i in 1:length(ltype)) {
+  ltype_matrix[, i] <- paste(ltype, ltype[i])
+}
+
+# Extract lower triangle of matrices
+distance_matrix_tri <- distance_matrix[lower.tri(distance_matrix)]
+bcdist_df_tri <- bcdist_df[lower.tri(bcdist_df)] #using BCdist from below
+plot_matrix_tri <- type_matrix[lower.tri(type_matrix)]
+layer_matrix_tri <- ltype_matrix[lower.tri(type_matrix)]
+distvdist <- data.frame(X = distance_matrix_tri * 5, Y = bcdist_df_tri, plots = plot_matrix_tri, layers = layer_matrix_tri)
+distvdist <- distvdist %>%
+  mutate(plot_comparison = ifelse(plots == "C C" | plots == "H H", "intraplot", "interplot"),
+         layer_type = ifelse(layers == "M O" | layers == "O M", "inter", "intra"))
+```
+
+```{r}
+# Create BCdist summary plots
+f <- function(x) {
+  return(0.97 - (0.25)^(0.065*x+1.15))
+}
+
+ff <- function(x) {
+  return((0.97)/(1 + (2.71)^(-0.1(1.1*x+12.6))))
+}
+
+distvdist %>%
+  ggplot(aes(x = X, y = Y)) +
+#    geom_jitter(width=2) +
+    geom_point() +
+    geom_smooth(method="loess") +
+    geom_function(fun = f, color = "red") +
+#    scale_color_manual(values=c('#990000', '#5ad188', '#5ad188', '#E69F00')) +
+#    scale_color_manual(values=c('#990000', '#E69F00')) +
+    labs(x = "Interplot Distance (m)", y = "BC Dissimilarity")
+
+distvdist %>%
+  filter(X > 0) %>%
+#  filter(layers == "O O" | layers == "M M") %>%
+  filter(layers == "O O") %>%
+  ggplot(aes(x = X, y = Y, color = plot_comparison)) +
+    geom_point() +
+    geom_smooth(method='lm', formula= y~x) +
+#    scale_color_manual(values=c('#990000', '#5ad188', '#5ad188', '#E69F00')) +
+    scale_color_manual(values=c('#990000', '#E69F00')) +
+    labs(x = "Interplot Distance (m)", y = "BC Dissimilarity")
+
+distvdist %>%
+#  filter(plots == "C C" | plots == "H H") %>%
+  filter(layers == "O O" | layers == "M M") %>%
+#  filter(X > 0) %>%
+  ggplot(aes(x = X, y = Y, color = layers)) +
+    geom_point() +
+    geom_smooth(se=FALSE) +
+    scale_color_manual(values=c('#f5648b', '#5ad188')) +
+    labs(x = "Interplot Distance (m)", y = "BC Dissimilarity")
+
+distvdist %>%
+  filter(layers == "O O" | layers == "M M") %>%
+  ggplot(aes(x=Y,fill=plot_comparison))+
+  geom_histogram(binwidth=0.007)
+
+distvdist %>%
+  filter(layers == "M M") %>%
+  filter(plot_comparison == "interplot") %>%
+  summary()
+
+dvd_filter <- distvdist %>%
+  filter(layers == "O O" | layers == "M M")
+t.test(Y ~ layers, data = dvd_filter)
+```
+
+```{r}
+#BCdist for VCs
+
+#Create dataframe of counts by VC
+meta <- read_csv("/work/pi_jlb_umass_edu/blanchardlab/Jared/vcontact/checkv_phage_genome_overview_merged.csv") %>%
+  filter(type == "query") %>%
+  select(row, VC) %>%
+  distinct(row, .keep_all=TRUE)
+
+clustered <- merge(meta, phages_renorm, by.x="row", by.y="rname", all=TRUE) %>%
+  group_by(VC) %>%
+  summarize(across(where(is.numeric), sum)) %>%
+  mutate_if(is.numeric, ~round(., 0))
+vc <- as.matrix(clustered[,-1])
+row.names(vc) <- clustered$VC
+
+vc_t <- t(vc)
+vc_t_bcdist <- bcdist(vc_t)
+bcdist_vc <- as.matrix(vc_t_bcdist)
+
+#pcoa on bcdist
+library(ape)
+pcoa_bcdist_vc <- pcoa(bcdist_vc)
+
+vc_pcoa_df <- data.frame(pcoa_bcdist_vc$vectors)
+vc_pcoa_df$Sample <- rownames(vc_pcoa_df)
+
+# Plot using ggplot2
+ggplot(vc_pcoa_df, aes(x = Axis.1, y = Axis.2, label = Sample)) +
+  geom_point() +
+  geom_text(hjust = 0, vjust = 0, size=2) +
+  labs(x = "PCoA1", y = "PCoA2")
+```
+
+```{r}
+#plotting bcdist for VCs
+
+vc_pcoa_df_tri <- bcdist_vc[lower.tri(bcdist_vc)] #using BCdist
+
+distvdist_vc <- data.frame(X = distance_matrix_tri * 5, Y = vc_pcoa_df_tri, plots = plot_matrix_tri, layers = layer_matrix_tri)
+distvdist_vc <- distvdist_vc %>%
+  mutate(plot_comparison = ifelse(plots == "C C" | plots == "H H", "intraplot", "interplot"),
+         layer_type = ifelse(layers == "M O" | layers == "O M", "inter", "intra"))
+
+# Create scatterplot
+distvdist_vc %>%
+  filter(layers == "O O") %>%
+  ggplot(aes(x = X, y = Y, color = plot_comparison)) +
+  geom_point() +
+  geom_smooth(method='lm', formula= y~x) +
+  scale_color_manual(values=c('#990000', '#E69F00')) +
+  labs(x = "Interplot Distance (m)", y = "BC Dissimilarity")
+```
+
+```{r}
+#Is BC correlated with distance?
+library(ade4)
+mantel.rtest(distances, bcdist, nrepet = 999)
+```
+
+```{r}
+#Remove 17 DE genomes, repeat above
+phage_no_de <- phage %>%
+  filter(! rname %in% de_taxo$contig_ID)
+ 
+pnd <- as.matrix(phage_no_de[,-1])
+row.names(pnd) <- phage_no_de$rname
+
+phage_t <- t(pnd)
+bcdist <- bcdist(phage_t)
+bcdist_df <- as.matrix(bcdist)
+#fill in for bcdist object above
+```
+
+#Compare taxonomies
+```{r}
+phagcn <- read_csv("/work/pi_jlb_umass_edu/blanchardlab/Jared/phabox/virsorted.9/results/phagcn_prediction.csv") %>%
+  mutate_at("Accession", ~str_replace(., "\\|\\|full", "")) %>%
+  dplyr::rename("contig_ID" = "Accession") %>%
+  dplyr::rename("fam_pred_phagcn" = "Pred")
+
+setwd("/work/pi_jlb_umass_edu/blanchardlab/Jared/VIRify/results/final-viral-combined/08-final/taxonomy")
+virify_high <- read_tsv("high_confidence_viral_contigs_prodigal_annotation_taxonomy.tsv")
+virify_lo <- read_tsv("low_confidence_viral_contigs_prodigal_annotation_taxonomy.tsv")[-1,]
+virify_p <- read_tsv("prophages_prodigal_annotation_taxonomy.tsv")
+virify <- rbind(virify_high, virify_lo, virify_p)
+
+taxon_merge <- merge(virify, phagcn, by = "contig_ID")
+
+#count family taxon matches between virify and phabox
+m <- taxon_merge
+nrow(m)
+
+m %>%
+  group_by(fam_pred_phagcn) %>%
+  summarize(n = n())
+
+m <- m %>%
+  rowwise() %>%
+  mutate(match = ifelse(fam_pred_phagcn == family, "match", "no_match"))
+
+m %>%
+  rowwise() %>%
+  mutate(match = ifelse(fam_pred_phagcn == family, "match", "no_match")) %>%
+  group_by(match) %>%
+  summarize(n = n())
+```
+
+
+```{r}
+#de_phages <- read_tsv("/work/pi_jlb_umass_edu/blanchardlab/Jared/virsorter2/coassembly/final-viral-score.tsv")
+de_phages <- res$row
+taxonomic <- intersect(de_phages, taxon_merge$contig_ID)
+
+nrow(taxonomic)
+```
+
+#Phage summary stats
+```{r}
+checkv_res <- read_tsv("/work/pi_jlb_umass_edu/blanchardlab/Jared/checkv/virsorted.05/quality_summary.tsv")
+
+checkv_res %>%
+  ggplot(aes(x=contig_length,fill=checkv_quality)) +
+  geom_histogram(binwidth=1000) +
+  ggtitle("contig length") +
+  ylab("Count") + 
+  xlab("Length") +
+  xlim(0,200000)
+
+checkv_res %>%
+  ggplot(aes(x=completeness,fill=checkv_quality)) +
+  geom_histogram(binwidth=1000) +
+  ggtitle("contig length") +
+  ylab("Count") + 
+  xlab("Length") +
+  xlim(0,200000)
+
+checkv_res %>%
+  arrange(desc(checkv_quality)) %>%
+  ggplot(aes(x=(contig_length / 1000),y=completeness,color=checkv_quality)) +
+  geom_point(size=0.8) +
+  xlim(5,175) +
+  ylab("Completeness (%)") + 
+  xlab("Contig Length (kb)")
+#  scale_x_log10()
+
+checkv_res %>%
+  ggplot(aes(x=(contig_length / 1000),color=checkv_quality)) +
+  geom_density(linewidth=0.7) +
+  xlim(5,175) +
+  ylab("Kernel density") +
+  xlab("")
+
+checkv_res %>%
+  filter(checkv_quality == "Complete" | checkv_quality == "High-quality") %>%
+  ggplot(aes(x=contig_length)) +
+  geom_histogram(binwidth=2000) +
+  ggtitle("contig length") +
+  ylab("Count") + 
+  xlab("Length") +
+  xlim(0,200000)
+```
+
+
+#AMGs
+```{r}
+#BLASTing for other CAZy hits
+cazy_hits <- read.table("/work/pi_jlb_umass_edu/blanchardlab/Jared/BLAST/05.checkv_phages/cazy_hits.txt")
+colnames(cazy_hits) <- c("query", "subject", "similarity", "length", "mismatch", "gapopen", "q.start", "q.end", "s.start", "s.end", "evalue", "bitscore")
+
+cazy_hits <- cazy_hits %>%
+  filter(evalue <= 0.0001)
+
+cazy_hits %>%
+  filter(subject %in% setdiff(cazy_hits$subject, cazy_hits$query)) %>%
+  group_by(subject) %>%
+  summarize(n = n())
+
+cazy_hits %>% filter(subject %in% setdiff(cazy_hits$subject, cazy_hits$query))
+```
+
+#AMG Plots
+```{r}
+#Pie chart by plot type of AMG composition
+#amgsummary <- read_csv("/work/pi_jlb_umass_edu/blanchardlab/Jared/DRAM/DRAMv_Kbase/amg_category_summarycounts.csv")
+
+ggplot(amgsummary, aes(x="", y=Control_Sum, fill=ID)) +
+  geom_bar(stat="identity", width=1) +
+  coord_polar("y", start=0) +
+  ggtitle("Control Plot AMGs by function")
+
+ggplot(amgsummary, aes(x="", y=Heated_Sum, fill=ID)) +
+  geom_bar(stat="identity", width=1) +
+  coord_polar("y", start=0) +
+  ggtitle("Heated Plot AMGs by function")
+```
+
+```{r}
+#Group and quantify AMG abundance
+library(MatrixGenerics)
+
+phages <- readRDS("/work/pi_jlb_umass_edu/blanchardlab/Jared/Coverage/phages.rds")
+colnames(phages) <- sample_headers
+
+amgs <- read_tsv("/work/pi_jlb_umass_edu/blanchardlab/Jared/DRAM/DRAMv_Kbase/amg_summary.tsv") %>%
+  select(scaffold, category, header, subheader, module, gene_description) %>%
+  distinct(scaffold, gene_description, .keep_all = TRUE)
+amgs_merged <- merge(amgs, phages, by.x = "scaffold", by.y = "rname", all.x = TRUE, all.y = FALSE)
+amg_counts <- amgs_merged
+#  mutate_if(is.numeric, ~round(., 0))
+amgs_grouped1 <- amg_counts %>%
+  group_by(gene_description) %>% #change group_by() to category, header, etc to group AMGs as needed; match below
+  summarize(across(where(is.numeric), sum))
+
+#For DESeq
+amg_genes <- amgs_grouped1 %>%
+  mutate_if(is.numeric, ~round(., 0))
+amg_gene_counts <- as.matrix(amg_genes[,-1])
+row.names(amg_gene_counts) <- amg_genes$gene_description
+  
+#Calculate stdev for each amg category, for heated vs control abundance values
+control_cols <- grep("^\\C", names(amgs_grouped1))
+heated_cols <- grep("^\\H", names(amgs_grouped1))
+
+control_amgs <- amgs_grouped1 %>%
+  select(all_of(c(1,control_cols)))
+control_amg <- control_amgs
+
+heated_amgs <- amgs_grouped1 %>%
+  select(all_of(c(1,heated_cols)))
+heated_amg <- heated_amgs
+
+control_amg$SD <- apply(control_amgs[,-1], 1, sd, na.rm=TRUE)
+control_amg <- control_amg %>%
+  select(gene_description, SD) #change arg 1 to match selection above
+
+heated_amg$SD <- apply(heated_amgs[,-1], 1, sd, na.rm=TRUE)
+heated_amg <- heated_amg %>%
+  select(gene_description, SD) #change arg 1 to match selection above
+
+#Sum across control and heated columnns
+amgs_grouped <- amgs_grouped1[,1]
+amgs_grouped$Control_Sum <- rowSums(control_amgs[,2:15])
+amgs_grouped$Heated_Sum <- rowSums(heated_amgs[,2:15])
+#amgs_grouped$diff <- amgs_grouped$Heated_Sum - amgs_grouped$Control_Sum
+# amgs_grouped$prop <- amgs_grouped$Heated_Sum/amgs_grouped$Control_Sum
+
+# amgsummary <- amgs[,c(1,30:32)] %>%
+#   mutate_if(is.numeric, ~round(., 2))
+# write_csv(amgsummary, "/work/pi_jlb_umass_edu/blanchardlab/Jared/DRAM/DRAMv_Kbase/amg_category_summarycounts.csv")
+
+amgsummary_for_plot <- amgs_grouped %>%
+#  select(-diff, -prop) %>%
+  pivot_longer(cols = Control_Sum:Heated_Sum,
+               names_to = "plot",
+               values_to = "abundance")
+
+amgsummary_for_plot <- amgsummary_for_plot %>%
+  arrange(plot) %>%
+  mutate(sd = rbind(control_amg, heated_amg)$SD)
+
+
+sub <- function(x){ 
+  return (str_sub(x, 1, 37))
+}
+
+amgsummary_for_plot[,1] <- data.frame(lapply(amgsummary_for_plot[,1], sub))
+```
+
+```{r}
+amgsummary_for_plot_by_cat <- amgsummary_for_plot
+amgsummary_for_plot_by_header <- amgsummary_for_plot
+amgsummary_for_plot_by_cat$ID <- factor(amgsummary_for_plot_by_cat$ID, levels=c("MISC", "Organic Nitrogen", "carbon utilization", "Energy", "Transporters"))
+
+#Bar charts by AMG composition
+amgsummary_for_plot %>%
+  ggplot(aes(x=gene_description, y=abundance, fill=plot)) +
+  geom_bar(stat="identity", width=0.8, position=position_dodge()) +
+  scale_fill_manual(values=c("#65c8ce", "#de89b9")) +
+  coord_flip()+
+  ylab("Genome abundance") +
+  xlab("")
+#  geom_errorbar(aes(ymin=abundance-sd, ymax=abundance+sd), width=.2, position=position_dodge(0.8))
+
+amgsummary_for_plot_by_cat %>%
+  ggplot(aes(x=ID, y=abundance, fill=plot)) +
+  geom_bar(stat="identity", width=0.8, position=position_dodge()) +
+  scale_fill_manual(values=c("#65c8ce", "#de89b9")) +
+  ylab("Genome abundance") +
+  xlab("")
+#  geom_errorbar(aes(ymin=abundance-sd, ymax=abundance+sd), width=.2, position=position_dodge(0.8))
+
+amgsummary_for_plot %>%
+  filter(header != "NA") %>%
+  ggplot(aes(x=header, y=abundance, fill=plot)) +
+  geom_bar(stat="identity", width=0.8, position=position_dodge()) +
+  coord_flip() +
+  scale_fill_manual(values=c("#65c8ce", "#de89b9")) +
+  ylab("Genome abundance") +
+  xlab("")
+#  geom_errorbar(aes(ymin=abundance-sd, ymax=abundance+sd), width=.2, position=position_dodge(0.8))
+
+#tell ggplot to keep rows in original order (run before bar plots)
+# amgsummary_for_plot_by_header$ID <- amgsummary_for_plot_by_header %>%
+#   distinct(ID) %>%
+#   factor(amgsummary_for_plot_by_header$ID,levels=amgsummary_for_plot_by_header$ID)
+```
+
+```{r}
+#t-tests
+control_cols2 <- grep("^\\C", names(amg_counts))
+heated_cols2 <- grep("^\\H", names(amg_counts))
+
+control_counts <- amg_counts %>%
+  select(all_of(c(1,2,3,4,5,6,control_cols2))) %>%
+  pivot_longer(
+  cols=7:20,
+  names_to = "subplot",
+  values_to = "count"
+  ) %>%
+  mutate(plot = paste("C"))
+
+heated_counts <- amg_counts %>%
+  select(all_of(c(1,2,3,4,5,6,heated_cols2))) %>%
+  pivot_longer(
+  cols=7:20,
+  names_to = "subplot",
+  values_to = "count"
+  ) %>%
+  mutate(plot = paste("H"))
+
+all_amg <- rbind(control_counts, heated_counts)
+
+selected <- all_amg %>%
+  filter(module == "Methionine degradation") %>%
+  group_by(scaffold, plot) %>%
+  summarize(across(where(is.numeric), sum))
+```
+
+```{r}
+#get sublevels for each grouping
+
+amg_counts %>%
+  filter(header == "CAZY") %>%
+  group_by(module) %>%
+  summarize()
+```
+
+
+```{r}
+#running dotplot and t test on amg distributions by subplot count
+
+#categories
+category_tests <- list()
+for (cat in levels(as.factor(all_amg$category))){
+  test_amg <- all_amg %>%
+    filter(category == cat)
+  
+  category_tests[[cat]] <- t.test(count ~ plot, data = test_amg)
+}
+
+#headers
+header_tests <- list()
+for (head in levels(as.factor(all_amg$header))){
+  test_amg <- all_amg %>%
+    filter(header == head)
+  
+  header_tests[[head]] <- t.test(count ~ plot, data = test_amg)
+}
+
+#subheaders
+subheader_tests <- list()
+for (head in levels(as.factor(all_amg$subheader))){
+  test_amg <- all_amg %>%
+    filter(subheader == head)
+  
+  subheader_tests[[head]] <- t.test(count ~ plot, data = test_amg)
+}
+
+#modules
+mod_tests <- list()
+for (mod in levels(as.factor(all_amg$module))){
+  test_amg <- all_amg %>%
+    filter(module == mod)
+  
+  mod_tests[[mod]] <- t.test(count ~ plot, data = test_amg)
+}
+
+#genes
+gene_tests <- list()
+for (gene in levels(as.factor(all_amg$gene_description))){
+  test_amg <- all_amg %>%
+    filter(gene_description == gene)
+  
+  gene_tests[[gene]] <- t.test(count ~ plot, data = test_amg)
+}
+
+#True/false results
+sapply(category_tests, "[[", 3) < 0.05
+sapply(header_tests, "[[", 3) < 0.05
+sapply(subheader_tests, "[[", 3) < 0.05
+sapply(mod_tests, "[[", 3) < 0.05
+sapply(gene_tests, "[[", 3) < 0.05
+subheader_tests
+```
+
+```{r}
+testest <- all_amg %>%
+  filter(module == "Siroheme biosynthesis, glutamate => siroheme")
+
+testest%>%
+  ggplot(aes(x=plot,y=count)) +
+    geom_dotplot(binaxis='y', stackdir='center') +
+    theme(axis.text.x = element_text(size=10)) +
+    ylab("Phage Abundance") +
+    xlab("Plot Type") +
+    stat_summary(fun.y=mean, geom="crossbar", linewidth=0.4, width=0.5, color="red")
+
+t.test(count ~ plot, data = testest)
+```
+
+
+#Viral lifestyle analysis
+```{r}
+lysogenics <- read_table("/work/pi_jlb_umass_edu/blanchardlab/Jared/DRAM/05_checkv_annotation/lysogenic_ids.txt", col_names="id") %>%
+  mutate_at("id", str_replace, "05\\.checkv_phages_", "") %>%
+  mutate_at("id", str_replace, "_[0-9]+$", "")
+
+lyso <- lysogenics %>%
+  group_by(id) %>%
+  summarize(n=n()) %>%
+#  filter(n > 1) %>%
+  select(-n)
+
+lyso_counts <- phages %>%
+  filter(rname %in% lyso$id) %>%
+    mutate_if(is.numeric, ~round(., 0))
+
+lyso_counts <- as.matrix(lyso_counts[,-1]) + 1
+row.names(lyso_counts) <- lyso$id
+```
+
+```{r}
+#Merge phaTYP lifestyle predictions with AMG functional traits and abundance
+amgs <- read_tsv("/work/pi_jlb_umass_edu/blanchardlab/Jared/DRAM/DRAMv_Kbase/amg_summary.tsv") %>%
+  select(scaffold, category, header, module, gene_description) %>%
+  distinct(scaffold, gene_description, .keep_all = TRUE)
+amgs_merged <- merge(amgs, phages, by.x = "scaffold", by.y = "rname", all.x = TRUE, all.y = FALSE)
+
+phatyp <- read.csv("/work/pi_jlb_umass_edu/blanchardlab/Jared/phabox/05.checkv.LIFESTYLE/results/phatyp_prediction.csv")
+
+lyso_maybe <- merge(phatyp, lyso, by.x = "Accession", by.y = "id", all.x = FALSE, all.y = TRUE) #were genomes with lysogenic-like genes identified by phatyp as temperate? Many were not.
+
+type_trait <- merge(amgs_for_nwk, phatyp, by.x = "scaffold", by.y = "Accession", all.x = TRUE, all.y = FALSE)
+
+type_trait_count <- merge(amgs_merged, phatyp, by.x = "scaffold", by.y = "Accession",  all.x = TRUE, all.y = FALSE) #making table with ID, amgs, lifestyle and 28 sample counts
+type_trait_count <- type_trait_count[,c(1,34:36,2:33)]
+
+type_trait_vir <- type_trait_count %>%
+  filter(Pred == "virulent")
+type_trait_temp <- type_trait_count %>%
+  filter(Pred == "temperate")
+
+type_trait_vir_summary <- type_trait_vir %>%
+  group_by(gene_description) %>%
+  summarize(n=n()) %>%
+  arrange(desc(n))
+type_trait_temp_summary <- type_trait_temp %>%
+  group_by(gene_description) %>%
+  summarize(n=n()) %>%
+  arrange(desc(n))
+
+type_trait_vir_summary
+type_trait_temp_summary
+```
+
+```{r}
+#Length vs lifestyle
+phatyp %>%
+  filter(Pred != "unpredicted") %>%
+  ggplot(aes(x=Pred, y=(Length / 1000))) +
+  geom_boxplot() +
+  ylim(0,600) +
+  scale_y_log10() +
+  xlab("Reproductive Lifestyle") +
+  ylab("Genome Length (log kb)")
+
+phat <- phatyp %>%
+  filter(Pred != "unpredicted") %>%
+  mutate(Length = Length / 1000)
+
+t.test(Length ~ Pred, data = phat)
+```
+
+```{r}
+#Plot type and lifestyle
+type_trait_count <- merge(amgs_merged, phatyp, by.x = "scaffold", by.y = "Accession",  all.x = TRUE, all.y = FALSE) #making table with ID, amgs, lifestyle and 28 sample counts
+type_trait_count <- type_trait_count[,c(1,34:36,2:33)]
+
+phatyp %>%
+  filter(Score >= 0.95) %>%
+  group_by(Pred) %>%
+  summarize(n = n()) #get abundance of each group to average count sums below
+
+phage_bytype <- merge(phatyp, phages, by.x = "Accession", by.y = "rname", all = TRUE)
+
+phage_bytype_filter <- phage_bytype %>%
+  filter(Score >= 0.95)
+
+phage_bytype_filter_sum <- phage_bytype_filter %>%
+  group_by(Pred) %>%
+  summarize(across(where(is.numeric), sum))
+
+phage_bytype_filter_sum[1,3:31] <- phage_bytype_filter_sum[1,3:31] / 136
+phage_bytype_filter_sum[2,3:31] <- phage_bytype_filter_sum[2,3:31] / 431
+
+phage_bytype_filter_sum_long <- phage_bytype_filter_sum %>%
+  pivot_longer(cols = 4:31, names_to = "plot", values_to = "count")
+
+phage_bytype_filter_sum_long %>%
+  ggplot(aes(x=plot,y=count,fill=Pred)) +
+  geom_bar(position="dodge", stat="identity") +
+  coord_flip()
+
+#dotplot for t test
+ttc_vir <- type_trait_count %>%
+  filter(Pred == "virulent") %>%
+  select(scaffold, 9:36) %>%
+  pivot_longer(cols = 2:29, names_to = "id", values_to = "count")
+
+ttc_temp <- type_trait_count %>%
+  filter(Pred == "temperate") %>%
+  select(scaffold, 9:36) %>%
+  pivot_longer(cols = 2:29, names_to = "id", values_to = "count")
+
+ttc_vir$type <- "virulent"
+ttc_temp$type <- "temperate"
+
+ttc <- rbind(ttc_temp, ttc_vir)
+
+ttc$plot <- str_sub(ttc$id, 1, 1)
+ttc$plot_type <- paste(ttc$plot, ttc$type)
+
+#####
+ttc_grouped <- ttc %>%
+  group_by(scaffold, plot_type) %>%
+  summarize(across(where(is.numeric), sum))
+
+ttc %>%
+  ggplot(aes(x=count,fill=plot_type))+
+  geom_histogram(binwidth=0.25)+
+  xlim(0,30) +
+  scale_y_log10()
+
+ttc_grouped %>%
+  ggplot(aes(x=plot_type,y=count))+
+  geom_boxplot() +
+  ylim(0,220)+
+  xlab("Plot Type") +
+  ylab("Total Contig Abundance")
+
+ttc_filter <- ttc_grouped %>%
+  filter(plot_type == "H temperate" | plot_type == "C temperate")
+
+median(ttc_filter$count)
+
+ttc_grouped %>%
+  group_by(plot_type) %>%
+  summarize(m = mean(count))
+
+t.test(count ~ plot_type, data = ttc_filter)
+```
+
+
+```{r}
+selected <- type_trait_count %>%
+  select(-Length, -Score) %>%
+  filter(category == "Organic Nitrogen") %>%
+  group_by(gene_description) %>%
+  summarize(across(where(is.numeric), sum))
+
+select.p <- selected %>%
+  pivot_longer(cols = 2:29, names_to = "id", values_to = "count")
+
+select.p %>%
+  ggplot(aes(x=gene_description,y=count)) +
+    geom_dotplot(binaxis='y', stackdir='center') +
+    theme(axis.text.x = element_text(size=10)) +
+    ylab("Phage Abundance") + 
+    xlab("Plot Type") +
+    stat_summary(fun.y=mean, geom="crossbar", linewidth=0.4, width=0.5, color="red")
+
+t.test(count ~ plot, data = select.p)
+```
+
+```{r}
+#Heatmap/bubble plot of amg abundance by lifestyle, plot type
+hcols <- heated_cols + 7
+ccols <- control_cols + 7
+
+#virulent phages
+type_trait_vir$Control_Sum <- rowSums(type_trait_vir[,ccols])
+type_trait_vir$Heated_Sum <- rowSums(type_trait_vir[,hcols])
+
+type_trait_vir_t <- type_trait_vir %>%
+  select(header,Control_Sum,Heated_Sum) %>%
+  pivot_longer(cols = Control_Sum:Heated_Sum, names_to = "plot", values_to = "count") %>%
+  group_by(header,plot) %>%
+  summarize(across(where(is.numeric), sum))
+  
+type_trait_vir_t %>%
+  ggplot(aes(x=plot,y=header)) +
+  geom_point(aes(size = count), shape = 21)
+
+#temperate phages
+type_trait_temp$Control_Sum <- rowSums(type_trait_temp[,ccols])
+type_trait_temp$Heated_Sum <- rowSums(type_trait_temp[,hcols])
+
+type_trait_temp_t <- type_trait_temp %>%
+  select(header,Control_Sum,Heated_Sum) %>%
+  pivot_longer(cols = Control_Sum:Heated_Sum, names_to = "plot", values_to = "count") %>%
+  group_by(header,plot) %>%
+  summarize(across(where(is.numeric), sum))
+  
+type_trait_temp_t %>%
+  ggplot(aes(x=plot,y=header)) +
+  geom_point(aes(size = count), shape = 21) +
+  scale_size_area(max_size = 20)
+```
+
+```{r}
+#Plotting AMG abundance by lifestyle
+
+#Header
+type_trait_count_grouped <- type_trait_count %>%
+  group_by(header, Pred) %>%
+  summarize(across(where(is.numeric), sum)) %>%
+  filter(!is.na(header)) %>%
+  arrange(Pred)
+
+type_trait_count_grouped[1:4,5:32] <- type_trait_count_grouped[1:4,5:32] / 136
+type_trait_count_grouped[5:15,5:32] <- type_trait_count_grouped[5:15,5:32] / 431
+
+type_trait_count_grouped_l <- type_trait_count_grouped %>%
+  pivot_longer(cols = 5:32, names_to = "plot", values_to = "count")
+
+type_trait_count_grouped_l %>%
+  ggplot(aes(x=header,y=count,fill=Pred))+
+  geom_bar(position="dodge", stat="identity")+
+  coord_flip() +
+  xlab("") +
+  ylab("Relative abundance (meandepth / n)")
+
+#Module
+type_trait_count_grouped_mod <- type_trait_count %>%
+  group_by(module, Pred) %>%
+  summarize(across(where(is.numeric), sum)) %>%
+  filter(!is.na(module)) %>%
+  arrange(Pred)
+
+type_trait_count_grouped_module <- type_trait_count_grouped_mod
+
+type_trait_count_grouped_module[1:6,5:32] <- type_trait_count_grouped_mod[1:6,5:32] / 136
+type_trait_count_grouped_module[7:32,5:32] <- type_trait_count_grouped_mod[7:32,5:32] / 431
+
+type_trait_count_grouped_module_l <- type_trait_count_grouped_module %>%
+  pivot_longer(cols = 5:32, names_to = "plot", values_to = "count")
+
+type_trait_count_grouped_module_l %>%
+  ggplot(aes(x=module,y=count,fill=Pred))+
+  geom_bar(position="dodge", stat="identity")+
+  coord_flip() +
+  xlab("") +
+  ylab("Relative abundance (meandepth / n)")
+
+#gene
+type_trait_count_grouped_gene <- type_trait_count %>%
+  group_by(gene_description, Pred) %>%
+  summarize(across(where(is.numeric), sum)) %>%
+  filter(!is.na(gene_description)) %>%
+  arrange(Pred)
+
+type_trait_count_grouped_genedesc <- type_trait_count_grouped_gene
+
+type_trait_count_grouped_genedesc[1:6,5:32] <- type_trait_count_grouped_gene[1:6,5:32] / 136
+type_trait_count_grouped_genedesc[7:32,5:32] <- type_trait_count_grouped_gene[7:32,5:32] / 431
+
+type_trait_count_grouped_genedesc_l <- type_trait_count_grouped_genedesc %>%
+  pivot_longer(cols = 5:32, names_to = "plot", values_to = "count")
+
+
+sub <- function(x){ 
+  return (str_sub(x, 1, 37))
+}
+
+type_trait_count_grouped_genedesc_l[,1] <- data.frame(lapply(type_trait_count_grouped_genedesc_l[,1], sub))
+
+
+type_trait_count_grouped_genedesc_l %>%
+  ggplot(aes(x=gene_description,y=count,fill=Pred))+
+  geom_bar(position="dodge", stat="identity")+
+  coord_flip()
+```
+
+```{r}
+#t tests for amg abundance by lifestyle
+
+#modules
+temp_mods <- type_trait_count_grouped_mod %>%
+  filter(Pred == "temperate" & module != "Citrate cycle (TCA cycle, Krebs cycle)") %>%
+  group_by(module) %>%
+  summarize()
+temp_mods <- as.vector(temp_mods$module)
+
+mod_common_amgs <- type_trait_count_grouped_mod %>%
+  filter(module %in% temp_mods)
+
+amg_tests <- list()
+for (m in levels(as.factor(mod_common_amgs$module))){
+  test_amg <- mod_common_amgs %>%
+    filter(module == m)
+  
+  amg_tests[[m]] <- t.test(count ~ Pred, data = test_amg)
+}
+amg_tests
+
+#headers
+lifestyle_header <- type_trait_count_grouped_l %>%
+  filter(header == "Amino Acid")
+t.test(count ~ Pred, data = lifestyle_header)
+lifestyle_header
+```
+
+
+#Other Analysis Plots
+```{r}
+#plot distribution of rowsums
+# rowsums <- as.data.frame(rowSums(coverage[,3:30])/28)
+# colnames(rowsums) <- "avg"
+
+ggplot(rowsums, aes(x=avg)) +
+  geom_histogram(binwidth=1) +
+  xlim(0,200) +
+  scale_y_continuous(trans='log2') +
+  labs(title="Distribution of average meandepth per contig across all samples",
+        x ="meandepth", y = "count (log)")
+
+#plot distribution of baseMean from DESeq
+ggplot(res, aes(x=baseMean)) +
+  geom_histogram(binwidth=1) +
+  xlim(0,100) +
+  scale_y_continuous(trans='log2') +
+  labs(title="Distribution of baseMean values",
+        x ="baseMean", y = "count (log)")
+
+#plot distribution of log2FC
+ggplot(res, aes(x=log2FoldChange)) +
+  geom_histogram(binwidth=0.1) +
+  xlim(-10,10) +
+  labs(title="Distribution of log2FC values",
+        x ="log2FC", y = "count")
+```
+
+```{r}
+#PCA
+vsdata <- vst(dds, blind=FALSE)
+plotPCA(vsdata, intgroup = "Treatment")
+
+#autoplot PCA
+library(ggfortify)
+all_flip = t(high_count)
+coldata <- sample_mapping %>%
+  select("Sample", "Treatment", "Layer")
+
+pca_res <- prcomp(all_flip[,1:1000], scale.=TRUE)
+autoplot(pca_res, data = coldata, color = "Treatment")
+dds
+```
+
+```{r}
+#t-SNE
+library(Rtsne)
+library(plotly)
+
+# OTU_table_spread <- coconuts %>% pivot_wider(names_from = key, values_from = value) %>%
+#  select(-vOTU)
+
+all_flip = t(coconuts[,2:29])
+all = Rtsne(all_flip, perplexity = 1.5, check_duplicates = FALSE)
+plot(all$Y, col="blue", pch = 20, cex = 1.5)
+
+all_df = as.data.frame(all$Y, all$costs)
+#all_colored = read.csv("all.csv")
+meta = select(all_colored, "Timepoint", "Genotype")
+tsne_merge = cbind(all_df, meta)
+
+tsne_merge %>%
+  ggplot(aes(x = V1, 
+             y = V2,
+             color = Timepoint,
+             shape = Genotype))+
+  geom_point(size=3)+
+  scale_shape_manual(values = c(24, 16))+
+  theme(legend.position="bottom")
+
+head(all)
+```
+
+```{r}
+#Heatmaps/dendrograms
+
+dist = data.matrix(dist(table(OTU_table$Sample,OTU_table$vOTU),method="binary"))
+
+#sample_filter = dist[1:14,1:14]
+
+layer_filter1 <- as.data.frame(dist) %>%
+  filter(row_number() %% 2 != 0)
+layer_filter2 <- as.data.frame(dist) %>%
+  filter(row_number() %% 2 == 0)
+
+
+adjusted_dist = (dist^20)^2
+adjusted_filtered1 = data.matrix((layer_filter1^20)^2)
+adjusted_filtered2 = data.matrix((layer_filter2^20)^2)
+
+heatmap(adjusted_dist, cexRow=0.5, cexCol=0.5)
+heatmap(adjusted_filtered1, cexRow=0.5, cexCol=0.5)
+heatmap(adjusted_filtered2, cexRow=0.5, cexCol=0.5)
+```
